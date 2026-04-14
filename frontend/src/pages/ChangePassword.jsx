@@ -39,7 +39,7 @@ export default function ChangePassword() {
   const strengthClasses = ['very-weak', 'weak', 'fair', 'good', 'strong', 'very-strong']
 
   const getPasswordStrengthLabel = (password) => strengthLabels[getPasswordStrength(password)]
-  const getPasswordStrengthPercent = (password) => Math.min((getPasswordStrength(password) / 4) * 100, 100)
+  const getPasswordStrengthPercent = (password) => Math.min((getPasswordStrength(password) / 5) * 100, 100)
 
   const handleSubmit = async (event) => {
     event.preventDefault()
