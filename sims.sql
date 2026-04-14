@@ -716,8 +716,249 @@ CREATE INDEX idx_login_locked       ON LOGIN(is_locked);
 CREATE INDEX idx_audit_table        ON AUDIT_LOG(table_name, changed_at);
 
 -- ============================================================
--- SECTION 5: TRIGGERS (Abbreviated for brevity)
+-- SECTION 5: TRIGGERS
 -- ============================================================
--- (Trigger definitions would go here - see original script for full content)
+
+-- Trigger 1: Auto-update updated_at on USER_BASE
+CREATE OR REPLACE TRIGGER trg_user_updated_at
+BEFORE UPDATE ON USER_BASE FOR EACH ROW
+BEGIN
+    :NEW.updated_at := SYSTIMESTAMP;
+END;
+/
+
+-- Trigger 2: Auto-update updated_at on APPLICATION
+CREATE OR REPLACE TRIGGER trg_app_updated_at
+BEFORE UPDATE ON APPLICATION FOR EACH ROW
+BEGIN
+    :NEW.updated_at := SYSTIMESTAMP;
+END;
+/
+
+-- Trigger 3: Account lockout after 5 failed login attempts
+CREATE OR REPLACE TRIGGER trg_account_lockout
+BEFORE UPDATE OF failed_attempts ON LOGIN FOR EACH ROW
+BEGIN
+    IF :NEW.failed_attempts >= 5 THEN
+        :NEW.is_locked := 'Y';
+    END IF;
+END;
+/
+
+-- Trigger 4: Audit log on APPLICATION (INSERT / UPDATE / DELETE)
+CREATE OR REPLACE TRIGGER trg_audit_application
+AFTER INSERT OR UPDATE OR DELETE ON APPLICATION
+FOR EACH ROW
+DECLARE v_op VARCHAR2(10); v_id VARCHAR2(100);
+BEGIN
+    IF INSERTING THEN
+        v_op := 'INSERT'; v_id := TO_CHAR(:NEW.application_id);
+        INSERT INTO AUDIT_LOG VALUES (seq_audit.NEXTVAL, 'APPLICATION',
+            v_op, v_id, USER, SYSTIMESTAMP, NULL,
+            'student='||:NEW.student_id||',status='||:NEW.status);
+    ELSIF UPDATING THEN
+        v_op := 'UPDATE'; v_id := TO_CHAR(:NEW.application_id);
+        INSERT INTO AUDIT_LOG VALUES (seq_audit.NEXTVAL, 'APPLICATION',
+            v_op, v_id, USER, SYSTIMESTAMP,
+            'status='||:OLD.status, 'status='||:NEW.status);
+    ELSIF DELETING THEN
+        v_op := 'DELETE'; v_id := TO_CHAR(:OLD.application_id);
+        INSERT INTO AUDIT_LOG VALUES (seq_audit.NEXTVAL, 'APPLICATION',
+            v_op, v_id, USER, SYSTIMESTAMP,
+            'student='||:OLD.student_id||',status='||:OLD.status, NULL);
+    END IF;
+END;
+/
+
+-- Trigger 5: Validate STUDENT.dob < SYSDATE
+-- (ORA-02436 prevents SYSDATE in CHECK constraints; trigger enforces the same rule)
+CREATE OR REPLACE TRIGGER trg_validate_student_dob
+BEFORE INSERT OR UPDATE OF dob ON STUDENT
+FOR EACH ROW
+BEGIN
+    IF :NEW.dob >= SYSDATE THEN
+        RAISE_APPLICATION_ERROR(-20001,
+            'dob must be in the past. Received: ' || TO_CHAR(:NEW.dob,'YYYY-MM-DD'));
+    END IF;
+END;
+/
+
+-- Trigger 6: Validate APPLICATION.applied_date <= SYSDATE
+CREATE OR REPLACE TRIGGER trg_validate_app_date
+BEFORE INSERT OR UPDATE OF applied_date ON APPLICATION
+FOR EACH ROW
+BEGIN
+    IF :NEW.applied_date > SYSDATE THEN
+        RAISE_APPLICATION_ERROR(-20002,
+            'applied_date cannot be a future date. Received: ' || TO_CHAR(:NEW.applied_date,'YYYY-MM-DD'));
+    END IF;
+END;
+/
+
+-- Trigger 7: Validate APPROVAL.approval_date <= SYSDATE
+CREATE OR REPLACE TRIGGER trg_validate_approval_date
+BEFORE INSERT OR UPDATE OF approval_date ON APPROVAL
+FOR EACH ROW
+BEGIN
+    IF :NEW.approval_date > SYSDATE THEN
+        RAISE_APPLICATION_ERROR(-20003,
+            'approval_date cannot be a future date. Received: ' || TO_CHAR(:NEW.approval_date,'YYYY-MM-DD'));
+    END IF;
+END;
+/
+
+-- Trigger 8: Validate REMARK.remark_date <= SYSDATE
+CREATE OR REPLACE TRIGGER trg_validate_remark_date
+BEFORE INSERT OR UPDATE OF remark_date ON REMARK
+FOR EACH ROW
+BEGIN
+    IF :NEW.remark_date > SYSDATE THEN
+        RAISE_APPLICATION_ERROR(-20004,
+            'remark_date cannot be a future date. Received: ' || TO_CHAR(:NEW.remark_date,'YYYY-MM-DD'));
+    END IF;
+END;
+/
+
+-- Trigger 9: Audit log on APPROVAL (INSERT / UPDATE / DELETE)
+CREATE OR REPLACE TRIGGER trg_audit_approval
+AFTER INSERT OR UPDATE OR DELETE ON APPROVAL
+FOR EACH ROW
+DECLARE v_op VARCHAR2(10); v_id VARCHAR2(100);
+BEGIN
+    IF INSERTING THEN
+        v_op := 'INSERT'; v_id := :NEW.application_id||','||:NEW.faculty_id||','||:NEW.revision_no;
+        INSERT INTO AUDIT_LOG VALUES (seq_audit.NEXTVAL,'APPROVAL',v_op,v_id,USER,SYSTIMESTAMP,NULL,
+            'decision='||:NEW.decision);
+    ELSIF UPDATING THEN
+        v_op := 'UPDATE'; v_id := :NEW.application_id||','||:NEW.faculty_id||','||:NEW.revision_no;
+        INSERT INTO AUDIT_LOG VALUES (seq_audit.NEXTVAL,'APPROVAL',v_op,v_id,USER,SYSTIMESTAMP,
+            'decision='||:OLD.decision,'decision='||:NEW.decision);
+    ELSIF DELETING THEN
+        v_op := 'DELETE'; v_id := :OLD.application_id||','||:OLD.faculty_id||','||:OLD.revision_no;
+        INSERT INTO AUDIT_LOG VALUES (seq_audit.NEXTVAL,'APPROVAL',v_op,v_id,USER,SYSTIMESTAMP,
+            'decision='||:OLD.decision,NULL);
+    END IF;
+END;
+/
+
+-- Trigger 10: Audit log on REMARK (INSERT / DELETE)
+CREATE OR REPLACE TRIGGER trg_audit_remark
+AFTER INSERT OR DELETE ON REMARK
+FOR EACH ROW
+DECLARE v_op VARCHAR2(10); v_id VARCHAR2(100);
+BEGIN
+    IF INSERTING THEN
+        v_op := 'INSERT'; v_id := TO_CHAR(:NEW.remark_id);
+        INSERT INTO AUDIT_LOG VALUES (seq_audit.NEXTVAL,'REMARK',v_op,v_id,USER,SYSTIMESTAMP,NULL,
+            'type='||:NEW.remark_type||',text='||SUBSTR(:NEW.remark_text,1,50));
+    ELSIF DELETING THEN
+        v_op := 'DELETE'; v_id := TO_CHAR(:OLD.remark_id);
+        INSERT INTO AUDIT_LOG VALUES (seq_audit.NEXTVAL,'REMARK',v_op,v_id,USER,SYSTIMESTAMP,
+            'type='||:OLD.remark_type||',text='||SUBSTR(:OLD.remark_text,1,50),NULL);
+    END IF;
+END;
+/
+
+-- Trigger 11: Audit log on REMARK (UPDATE — kept separate to handle all three DML types)
+CREATE OR REPLACE TRIGGER trg_audit_remark_update
+AFTER UPDATE ON REMARK
+FOR EACH ROW
+BEGIN
+    INSERT INTO AUDIT_LOG VALUES (
+        seq_audit.NEXTVAL, 'REMARK', 'UPDATE', TO_CHAR(:NEW.remark_id),
+        USER, SYSTIMESTAMP,
+        'type='||:OLD.remark_type||',text='||SUBSTR(:OLD.remark_text,1,50),
+        'type='||:NEW.remark_type||',text='||SUBSTR(:NEW.remark_text,1,50)
+    );
+END;
+/
+
+-- Trigger 12: Auto-update APPLICATION.status based on APPROVAL decisions
+CREATE OR REPLACE TRIGGER trg_auto_application_status
+AFTER INSERT OR UPDATE ON APPROVAL
+FOR EACH ROW
+DECLARE
+    v_rejected NUMBER;
+    v_pending  NUMBER;
+BEGIN
+    SELECT COUNT(*) INTO v_rejected
+    FROM APPROVAL
+    WHERE application_id = :NEW.application_id AND decision = 'Rejected';
+
+    SELECT COUNT(*) INTO v_pending
+    FROM APPROVAL
+    WHERE application_id = :NEW.application_id AND decision = 'Pending';
+
+    IF v_rejected > 0 THEN
+        UPDATE APPLICATION SET status = 'Rejected'
+        WHERE application_id = :NEW.application_id;
+    ELSIF v_pending > 0 THEN
+        UPDATE APPLICATION SET status = 'Under Review'
+        WHERE application_id = :NEW.application_id;
+    ELSE
+        UPDATE APPLICATION SET status = 'Approved'
+        WHERE application_id = :NEW.application_id;
+    END IF;
+END;
+/
+
+-- Trigger 13: Update last_login when failed_attempts is reset to 0
+-- FIX 11 (CRITICAL): Changed from AFTER trigger (which caused ORA-04091 mutating table
+--         because it did UPDATE LOGIN inside an AFTER UPDATE ON LOGIN trigger) to a BEFORE
+--         trigger that uses the :NEW pseudo-record assignment instead. This is safe and
+--         idiomatic Oracle PL/SQL.
+CREATE OR REPLACE TRIGGER trg_update_last_login
+BEFORE UPDATE OF failed_attempts ON LOGIN
+FOR EACH ROW
+WHEN (NEW.failed_attempts = 0)
+BEGIN
+    :NEW.last_login := SYSTIMESTAMP;
+END;
+/
+
+-- ============================================================
+-- SECTION 6: ROLES AND PRIVILEGES  (Principle of Least Privilege)
+-- ============================================================
+
+CREATE ROLE student_role;
+CREATE ROLE faculty_role;
+CREATE ROLE admin_role;
+
+-- student_role: browse internships, manage own applications only
+GRANT SELECT               ON COMPANY           TO student_role;
+GRANT SELECT               ON INTERNSHIP        TO student_role;
+GRANT SELECT               ON INTERNSHIP_YEAR   TO student_role;
+GRANT SELECT               ON INTERNSHIP_DEPT   TO student_role;
+GRANT SELECT               ON INTERNSHIP_GENDER TO student_role;
+GRANT SELECT               ON INTERNSHIP_CGPA   TO student_role;
+GRANT SELECT, INSERT, UPDATE ON APPLICATION     TO student_role; 
+GRANT SELECT               ON APPROVAL          TO student_role;
+GRANT SELECT               ON REMARK            TO student_role;
+
+-- faculty_role: manage approvals and remarks, read-only on applications
+GRANT SELECT                 ON APPLICATION  TO faculty_role;
+GRANT SELECT, INSERT, UPDATE ON APPROVAL     TO faculty_role;
+GRANT SELECT, INSERT         ON REMARK       TO faculty_role;
+GRANT SELECT                 ON STUDENT      TO faculty_role;
+GRANT SELECT                 ON INTERNSHIP   TO faculty_role;
+
+-- admin_role: full DML on all tables + read-only audit log
+GRANT ALL PRIVILEGES ON COMPANY           TO admin_role;
+GRANT ALL PRIVILEGES ON USER_BASE         TO admin_role;
+GRANT ALL PRIVILEGES ON STUDENT           TO admin_role;
+GRANT ALL PRIVILEGES ON FACULTY           TO admin_role;
+GRANT ALL PRIVILEGES ON INTERNSHIP        TO admin_role;
+GRANT ALL PRIVILEGES ON APPLICATION       TO admin_role;
+GRANT ALL PRIVILEGES ON APPROVAL          TO admin_role;
+GRANT ALL PRIVILEGES ON REMARK            TO admin_role;
+GRANT ALL PRIVILEGES ON ADMIN             TO admin_role;
+GRANT ALL PRIVILEGES ON LOGIN             TO admin_role;
+GRANT ALL PRIVILEGES ON USER_PHONE        TO admin_role;
+GRANT ALL PRIVILEGES ON INTERNSHIP_YEAR   TO admin_role;
+GRANT ALL PRIVILEGES ON INTERNSHIP_DEPT   TO admin_role;
+GRANT ALL PRIVILEGES ON INTERNSHIP_GENDER TO admin_role;
+GRANT ALL PRIVILEGES ON INTERNSHIP_CGPA   TO admin_role;
+GRANT SELECT         ON AUDIT_LOG         TO admin_role; 
+COMMIT;
 
 COMMIT;
